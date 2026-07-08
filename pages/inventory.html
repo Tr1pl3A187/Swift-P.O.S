@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SwiftPOS — Inventory</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-icon">🛒</div>
+    <div class="logo-text">SwiftPOS <span>Professional Suite</span></div>
+  </div>
+  <nav class="sidebar-nav">
+    <div class="nav-section">
+      <div class="nav-section-label">POS</div>
+      <a class="nav-item" data-path="/" href="/">
+        <span class="nav-icon">🏪</span><span>Point of Sale</span>
+      </a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-label">Management</div>
+      <a class="nav-item" data-path="/inventory" href="/inventory">
+        <span class="nav-icon">📦</span><span>Inventory</span>
+      </a>
+      <a class="nav-item" data-path="/sales-history" href="/sales-history">
+        <span class="nav-icon">📋</span><span>Sales History</span>
+      </a>
+      <a class="nav-item" data-path="/dashboard" href="/dashboard">
+        <span class="nav-icon">📊</span><span>Dashboard</span>
+      </a>
+    </div>
+  </nav>
+  <div class="sidebar-footer">
+    <div class="conn-status">
+      <div class="conn-dot"></div>
+      <span class="conn-label">Connecting...</span>
+    </div>
+  </div>
+</aside>
+
+<div class="main-wrapper">
+  <header class="topbar">
+    <div>
+      <div class="topbar-title">Inventory Management</div>
+      <div class="topbar-subtitle">Manage products, stock levels and categories</div>
+    </div>
+    <div class="topbar-right">
+      <span class="live-dot">Live</span>
+      <button class="btn btn-secondary btn-sm" id="export-btn">⬇️ Export CSV</button>
+      <button class="btn btn-primary" id="add-product-btn">+ Add Product</button>
+      <div class="topbar-time">--:--:--</div>
+    </div>
+  </header>
+
+  <div class="page-content">
+    <!-- Alert banner -->
+    <div class="alert-banner hidden" id="low-stock-alert">
+      ⚠️ <span id="low-stock-count">0</span> product(s) are low on stock or out of stock.
+      <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="filterLowStock()">View Low Stock</button>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-grid" id="inv-stats">
+      <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(99,102,241,0.15)">📦</div>
+        <div class="stat-content">
+          <div class="stat-label">Total Products</div>
+          <div class="stat-value" id="stat-total">—</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(16,185,129,0.15)">✅</div>
+        <div class="stat-content">
+          <div class="stat-label">In Stock</div>
+          <div class="stat-value" id="stat-instock">—</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(245,158,11,0.15)">⚠️</div>
+        <div class="stat-content">
+          <div class="stat-label">Low Stock</div>
+          <div class="stat-value" id="stat-low">—</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(239,68,68,0.15)">❌</div>
+        <div class="stat-content">
+          <div class="stat-label">Out of Stock</div>
+          <div class="stat-value" id="stat-out">—</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(59,130,246,0.15)">💰</div>
+        <div class="stat-content">
+          <div class="stat-label">Inventory Value</div>
+          <div class="stat-value" id="stat-value">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="card">
+      <div class="inv-toolbar">
+        <div class="search-box" style="flex:1; min-width:200px;">
+          <span class="search-icon">🔍</span>
+          <input type="text" class="form-control" id="inv-search" placeholder="Search products..." />
+        </div>
+        <select class="form-control" id="cat-filter" style="width:160px">
+          <option value="">All Categories</option>
+        </select>
+        <select class="form-control" id="stock-filter" style="width:140px">
+          <option value="">All Stock</option>
+          <option value="low">Low Stock</option>
+          <option value="out">Out of Stock</option>
+          <option value="ok">In Stock</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" id="reset-filters-btn">Reset</button>
+      </div>
+
+      <div class="table-wrapper">
+        <table id="inv-table">
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th>SKU</th>
+              <th>Category</th>
+              <th>Price</th>
+              <th>Cost</th>
+              <th>Stock</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="inv-tbody">
+            <tr><td colspan="8" style="text-align:center; padding:40px; color:var(--text-muted);">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Add/Edit Product Modal -->
+<div class="modal-overlay" id="product-modal">
+  <div class="modal" style="width:min(600px, 95vw)">
+    <div class="modal-header">
+      <div class="modal-title" id="product-modal-title">➕ Add Product</div>
+      <button class="modal-close btn btn-ghost btn-icon">×</button>
+    </div>
+    <form id="product-form">
+      <input type="hidden" id="product-id" />
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Product Name *</label>
+          <input type="text" class="form-control" id="p-name" required placeholder="e.g. Coca-Cola 330ml" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">SKU *</label>
+          <input type="text" class="form-control" id="p-sku" required placeholder="e.g. BEV001" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Category *</label>
+          <select class="form-control" id="p-category" required>
+            <option value="">Select category...</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Unit</label>
+          <input type="text" class="form-control" id="p-unit" placeholder="pcs, kg, bottle..." value="pcs" />
+        </div>
+      </div>
+      <div class="form-row-3">
+        <div class="form-group">
+          <label class="form-label">Selling Price *</label>
+          <div class="input-group">
+            <span style="background:var(--bg-input);border:1px solid var(--border);border-right:none;padding:9px 10px;border-radius:var(--radius-sm) 0 0 var(--radius-sm);color:var(--text-muted);">$</span>
+            <input type="number" class="form-control" id="p-price" min="0" step="0.01" required placeholder="0.00" style="border-radius:0 var(--radius-sm) var(--radius-sm) 0;" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Cost Price</label>
+          <div class="input-group">
+            <span style="background:var(--bg-input);border:1px solid var(--border);border-right:none;padding:9px 10px;border-radius:var(--radius-sm) 0 0 var(--radius-sm);color:var(--text-muted);">$</span>
+            <input type="number" class="form-control" id="p-cost" min="0" step="0.01" placeholder="0.00" style="border-radius:0 var(--radius-sm) var(--radius-sm) 0;" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Tax Rate (%)</label>
+          <input type="number" class="form-control" id="p-tax" min="0" max="100" step="0.1" placeholder="0" value="0" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Stock Quantity</label>
+          <input type="number" class="form-control" id="p-stock" min="0" placeholder="0" value="0" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Low Stock Alert Threshold</label>
+          <input type="number" class="form-control" id="p-threshold" min="0" placeholder="10" value="10" />
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Barcode (optional)</label>
+        <input type="text" class="form-control" id="p-barcode" placeholder="Scan or enter barcode" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description (optional)</label>
+        <textarea class="form-control" id="p-desc" rows="2" placeholder="Product description..."></textarea>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('product-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="save-product-btn">💾 Save Product</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Stock Adjust Modal -->
+<div class="modal-overlay" id="stock-modal">
+  <div class="modal" style="width: min(400px, 95vw)">
+    <div class="modal-header">
+      <div class="modal-title">📦 Adjust Stock</div>
+      <button class="modal-close btn btn-ghost btn-icon">×</button>
+    </div>
+    <input type="hidden" id="stock-product-id" />
+    <div class="form-group">
+      <label class="form-label">Product</label>
+      <div id="stock-product-name" style="font-weight:600; font-size:14px; padding: 8px 0;"></div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Current Stock</label>
+      <div id="stock-current" style="font-size:20px; font-weight:700; color:var(--primary-light); padding: 8px 0;"></div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Adjustment Type</label>
+      <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:6px">
+        <button class="payment-btn active" data-type="in">📥 Add Stock</button>
+        <button class="payment-btn" data-type="out">📤 Remove</button>
+        <button class="payment-btn" data-type="adjustment">✏️ Set To</button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Quantity</label>
+      <input type="number" class="form-control" id="stock-qty" min="0" placeholder="0" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Reason (optional)</label>
+      <input type="text" class="form-control" id="stock-reason" placeholder="e.g. Restock from supplier" />
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('stock-modal')">Cancel</button>
+      <button class="btn btn-primary" id="confirm-stock-btn">✅ Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- Category Modal -->
+<div class="modal-overlay" id="category-modal">
+  <div class="modal" style="width:min(400px,95vw)">
+    <div class="modal-header">
+      <div class="modal-title">🏷️ Manage Categories</div>
+      <button class="modal-close btn btn-ghost btn-icon">×</button>
+    </div>
+    <div id="cat-list" style="margin-bottom:16px"></div>
+    <div class="separator"></div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">New Category Name</label>
+        <input type="text" class="form-control" id="new-cat-name" placeholder="e.g. Snacks" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Icon (emoji)</label>
+        <input type="text" class="form-control" id="new-cat-icon" placeholder="🍫" value="📦" maxlength="4" />
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('category-modal')">Close</button>
+      <button class="btn btn-primary" id="add-cat-btn">+ Add Category</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container" class="toast-container"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/app.js"></script>
+<script src="/js/inventory.js"></script>
+</body>
+</html>

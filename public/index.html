@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <!-- CSP: Lock down script sources. Move to HTTP header in production for stronger enforcement. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' ws: wss:; img-src 'self' data: blob:;" />
+  
+  <title>SwiftPOS — Point of Sale</title>
+  
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  
+  <!-- Preload critical assets -->
+  <link rel="preload" href="/js/app.js" as="script" />
+  <link rel="preload" href="/js/pos.js" as="script" />
+</head>
+<body>
+
+<!-- No-JS Fallback -->
+<noscript>
+  <div style="position:fixed; inset:0; background:#0f172a; color:#fff; display:flex; align-items:center; justify-content:center; z-index:99999; font-family:Inter,sans-serif; text-align:center; padding:2rem;">
+    <div>
+      <div style="font-size:48px; margin-bottom:16px;">⚠️</div>
+      <h1 style="font-size:24px; margin-bottom:8px;">JavaScript Required</h1>
+      <p style="color:#94a3b8;">SwiftPOS requires JavaScript to function. Please enable JavaScript in your browser settings and reload.</p>
+    </div>
+  </div>
+</noscript>
+
+<!-- Global Offline Banner (injected by app.js when health check fails) -->
+<div id="offline-banner" class="offline-banner hidden" role="alert" aria-live="polite">
+  <span class="offline-icon">📡</span>
+  <span id="offline-message">Connection lost. Working in offline mode...</span>
+</div>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-icon" aria-hidden="true">🛒</div>
+    <div class="logo-text">SwiftPOS <span>Professional Suite</span></div>
+  </div>
+  
+  <nav class="sidebar-nav" aria-label="Main navigation">
+    <div class="nav-section">
+      <div class="nav-section-label">POS</div>
+      <a class="nav-item" data-path="/" href="/" aria-current="page">
+        <span class="nav-icon" aria-hidden="true">🏪</span><span>Point of Sale</span>
+      </a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-label">Management</div>
+      <a class="nav-item" data-path="/inventory" href="/inventory">
+        <span class="nav-icon" aria-hidden="true">📦</span><span>Inventory</span>
+      </a>
+      <a class="nav-item" data-path="/sales-history" href="/sales-history">
+        <span class="nav-icon" aria-hidden="true">📋</span><span>Sales History</span>
+      </a>
+      <a class="nav-item" data-path="/dashboard" href="/dashboard">
+        <span class="nav-icon" aria-hidden="true">📊</span><span>Dashboard</span>
+      </a>
+    </div>
+  </nav>
+  
+  <div class="sidebar-footer">
+    <!-- Store Selector: Critical for multi-tenancy -->
+    <div class="store-selector-group">
+      <label for="store-selector" class="store-label">Location</label>
+      <select id="store-selector" class="store-select" title="Select store location">
+        <option value="default">Default Store</option>
+        <option value="store-nyc">NYC Downtown</option>
+        <option value="store-la">LA Westfield</option>
+        <option value="store-chi">Chicago Loop</option>
+        <option value="store-mia">Miami Beach</option>
+      </select>
+    </div>
+    
+    <div class="conn-status" id="conn-status" aria-live="polite">
+      <div class="conn-dot" id="conn-dot" aria-hidden="true"></div>
+      <span class="conn-label" id="conn-label">Initializing...</span>
+    </div>
+  </div>
+</aside>
+
+<!-- Main -->
+<div class="main-wrapper">
+  <header class="topbar">
+    <div>
+      <div class="topbar-title">Point of Sale</div>
+      <div class="topbar-subtitle">Scan or select products to add to cart</div>
+    </div>
+    <div class="topbar-right">
+      <span class="live-dot" id="live-dot" aria-hidden="true">Live</span>
+      <div class="topbar-time" id="topbar-time" aria-label="Current time">--:--:--</div>
+    </div>
+  </header>
+
+  <div class="page-content">
+    <div class="pos-layout">
+
+      <!-- LEFT: Products -->
+      <div class="pos-left">
+        <!-- Search bar -->
+        <div class="pos-search-bar">
+          <span class="search-icon" aria-hidden="true">🔍</span>
+          <input 
+            type="text" 
+            id="product-search" 
+            placeholder="Search products, SKU, barcode..." 
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            aria-label="Search products"
+          />
+          <button id="search-clear" class="btn btn-ghost btn-icon hidden" aria-label="Clear search" style="padding:2px 6px; font-size:18px;">×</button>
+        </div>
+
+        <!-- Category tabs -->
+        <div class="cat-tabs" id="cat-tabs" role="tablist" aria-label="Product categories">
+          <div class="cat-tab active" data-cat="all" role="tab" tabindex="0" aria-selected="true">🏷️ All</div>
+        </div>
+
+        <!-- Product grid -->
+        <div class="products-scroll">
+          <div class="product-grid" id="product-grid" role="list" aria-label="Product list">
+            <div class="cart-empty" style="grid-column:1/-1; min-height:200px;" role="status" aria-live="polite">
+              <div class="cart-empty-icon" aria-hidden="true">⏳</div>
+              <div class="cart-empty-text">Loading products...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT: Cart -->
+      <div class="pos-right">
+        <div class="cart-panel">
+          <div class="cart-header">
+            <div class="flex items-center gap-2">
+              <span class="cart-title">Cart</span>
+              <span class="cart-count" id="cart-count" aria-label="Items in cart">0</span>
+            </div>
+            <button class="btn btn-ghost btn-sm" id="clear-cart-btn" title="Clear cart" aria-label="Clear cart">🗑️ Clear</button>
+          </div>
+
+          <div class="cart-items" id="cart-items" role="list" aria-label="Cart items">
+            <div class="cart-empty" role="status">
+              <div class="cart-empty-icon" aria-hidden="true">🛒</div>
+              <div class="cart-empty-text">Cart is empty</div>
+            </div>
+          </div>
+
+          <div class="cart-footer">
+            <div class="cart-totals">
+              <div class="cart-row">
+                <span>Subtotal</span>
+                <span id="cart-subtotal">$0.00</span>
+              </div>
+              <div class="cart-row">
+                <span>Discount</span>
+                <div class="cart-discount-row">
+                  <span>$</span>
+                  <input 
+                    type="number" 
+                    id="cart-discount" 
+                    min="0" 
+                    step="0.01" 
+                    value="0" 
+                    placeholder="0.00"
+                    aria-label="Cart discount amount"
+                  />
+                </div>
+              </div>
+              <div class="cart-row">
+                <span>Tax</span>
+                <span id="cart-tax">$0.00</span>
+              </div>
+              <div class="cart-row total-row">
+                <span>Total</span>
+                <span id="cart-total">$0.00</span>
+              </div>
+            </div>
+
+            <!-- Payment method -->
+            <div class="payment-btns" role="radiogroup" aria-label="Payment method">
+              <button class="payment-btn active" data-method="cash" role="radio" aria-checked="true">💵 Cash</button>
+              <button class="payment-btn" data-method="card" role="radio" aria-checked="false">💳 Card</button>
+              <button class="payment-btn" data-method="mobile" role="radio" aria-checked="false">📱 Mobile</button>
+            </div>
+
+            <button class="checkout-btn" id="checkout-btn" disabled aria-label="Checkout">
+              💰 Checkout — <span id="checkout-total">$0.00</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Checkout Modal -->
+<div class="modal-overlay" id="checkout-modal" role="dialog" aria-modal="true" aria-labelledby="checkout-title" tabindex="-1">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="checkout-title">💰 Complete Payment</div>
+      <button class="modal-close btn btn-ghost btn-icon" aria-label="Close checkout modal">×</button>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Order Summary</label>
+      <div class="summary-box" style="background: var(--bg-input); border-radius: var(--radius-sm); padding: 12px; font-size: 13px;">
+        <div class="cart-row"><span>Items</span><span id="modal-items-count">0</span></div>
+        <div class="cart-row"><span>Subtotal</span><span id="modal-subtotal">$0.00</span></div>
+        <div class="cart-row"><span>Discount</span><span id="modal-discount">$0.00</span></div>
+        <div class="cart-row"><span>Tax</span><span id="modal-tax">$0.00</span></div>
+        <div class="separator"></div>
+        <div class="cart-row" style="font-size:18px; font-weight:700;">
+          <span>Total</span><span id="modal-total" style="color:var(--primary-light)">$0.00</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Payment Method</label>
+      <div id="modal-payment-method" style="font-size: 14px; color: var(--primary-light); font-weight:600; padding: 8px 0;">💵 Cash</div>
+    </div>
+
+    <div class="form-group" id="cash-input-group">
+      <label class="form-label" for="amount-paid">Amount Received</label>
+      <div class="input-group">
+        <span style="background:var(--bg-input); border:1px solid var(--border); border-right:none; padding: 9px 12px; border-radius: var(--radius-sm) 0 0 var(--radius-sm); color: var(--text-muted);">$</span>
+        <input 
+          type="number" 
+          class="form-control" 
+          id="amount-paid" 
+          min="0" 
+          step="0.01" 
+          placeholder="0.00" 
+          style="border-radius: 0 var(--radius-sm) var(--radius-sm) 0;"
+          aria-label="Amount received"
+          inputmode="decimal"
+        />
+      </div>
+      <div class="numpad" id="numpad" role="group" aria-label="Numeric keypad">
+        <button class="numpad-btn" data-val="1" type="button">1</button>
+        <button class="numpad-btn" data-val="2" type="button">2</button>
+        <button class="numpad-btn" data-val="3" type="button">3</button>
+        <button class="numpad-btn" data-val="4" type="button">4</button>
+        <button class="numpad-btn" data-val="5" type="button">5</button>
+        <button class="numpad-btn" data-val="6" type="button">6</button>
+        <button class="numpad-btn" data-val="7" type="button">7</button>
+        <button class="numpad-btn" data-val="8" type="button">8</button>
+        <button class="numpad-btn" data-val="9" type="button">9</button>
+        <button class="numpad-btn special" data-val="clear" type="button">C</button>
+        <button class="numpad-btn" data-val="0" type="button">0</button>
+        <button class="numpad-btn special" data-val="back" type="button">⌫</button>
+      </div>
+      <div class="cart-row mt-2" style="font-size:15px; font-weight:700;">
+        <span>Change</span>
+        <span id="modal-change" style="color:var(--success)">$0.00</span>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="sale-note">Note (optional)</label>
+      <input 
+        type="text" 
+        class="form-control" 
+        id="sale-note" 
+        placeholder="Add a note..."
+        maxlength="1000"
+        aria-label="Sale note"
+      />
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary modal-close" type="button" onclick="closeModal('checkout-modal')">Cancel</button>
+      <button class="btn btn-success btn-lg" id="confirm-payment-btn" type="button">
+        ✅ Confirm Payment
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Receipt Modal -->
+<div class="modal-overlay" id="receipt-modal" role="dialog" aria-modal="true" aria-labelledby="receipt-title" tabindex="-1">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="receipt-title">🧾 Receipt</div>
+      <button class="modal-close btn btn-ghost btn-icon" aria-label="Close receipt modal">×</button>
+    </div>
+    <div id="receipt-content"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" type="button" onclick="window.print()">🖨️ Print</button>
+      <button class="btn btn-primary" type="button" onclick="closeModal('receipt-modal')">New Sale</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast Container -->
+<div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+<!-- Scripts: Load order matters -->
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/app.js"></script>
+<script src="/js/pos.js"></script>
+
+<!-- Store selector initialization -->
+<script>
+(function() {
+  const selector = document.getElementById('store-selector');
+  if (!selector) return;
+  
+  // Restore saved store
+  const saved = localStorage.getItem('storeId');
+  if (saved) selector.value = saved;
+  
+  // Persist on change and reload to re-init socket context
+  selector.addEventListener('change', function(e) {
+    localStorage.setItem('storeId', e.target.value);
+    location.reload();
+  });
+})();
+</script>
+</body>
+</html>
