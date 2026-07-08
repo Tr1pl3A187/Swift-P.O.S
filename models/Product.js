@@ -45,18 +45,17 @@ const productSchema = new mongoose.Schema(
     // CRITICAL: Currency stored as integer cents to eliminate float errors.
     // $12.34 is stored as 1234. Divide by 100 for display.
     price: {
-      type: Number,
-      required: [true, 'Price is required'],
-      min: [0, 'Price cannot be negative'],
-      set: (v) => Math.round(v) // Enforce integer cents
-    },
-
-    costPrice: {
-      type: Number,
-      default: 0,
-      min: [0, 'Cost price cannot be negative'],
-      set: (v) => Math.round(v)
-    },
+  type: Number,
+  required: [true, 'Price is required'],
+  min: [0, 'Price cannot be negative']
+  // REMOVE: set: (v) => Math.round(v)
+},
+costPrice: {
+  type: Number,
+  default: 0,
+  min: [0, 'Cost price cannot be negative']
+  // REMOVE: set: (v) => Math.round(v)
+},
 
     stock: {
       type: Number,

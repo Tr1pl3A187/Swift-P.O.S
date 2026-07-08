@@ -587,22 +587,23 @@
         items: cart.map(i => ({
           productId: i.productId,
           quantity: i.quantity,
-          discount: 0 // Per-item discount if needed
+          discount: 0
         })),
         discount,
         paymentMethod,
         amountPaid: paid,
-        cashier: 'Admin', // TODO: get from auth context
+        cashier: 'Admin',
         note: (els.saleNote?.value || '').trim()
       };
 
-      const res = await apiFetch('/sales', {
+      // FIXED: Use apiFetchWithRetry for proper retry logic
+      const res = await apiFetchWithRetry('/sales', {
         method: 'POST',
         body: JSON.stringify(saleData),
         headers: {
           'Idempotency-Key': idempotencyKey
         }
-      }, 2); // 2 retries with backoff
+      }, 2);
 
       if (!res.success || !res.data) {
         throw new Error(res.message || 'Checkout failed');
@@ -614,7 +615,6 @@
       showReceipt(sale);
       clearCart();
 
-      // Refresh products in background (don't block UI)
       setTimeout(() => loadProducts(1), 500);
 
       toast('Sale completed successfully!', 'success');
@@ -623,13 +623,12 @@
       console.error('Checkout error:', err);
       toast(err.message || 'Payment failed. Please try again.', 'error');
 
-      // Don't reset isProcessing on network timeout — let user retry
       if (err.name === 'TimeoutError') {
         if (btn) {
           btn.disabled = false;
           btn.textContent = '↻ Retry Payment';
         }
-        return; // Keep isProcessing false so they can retry
+        return;
       }
     } finally {
       isProcessing = false;
@@ -642,7 +641,6 @@
   }
 
   function generateIdempotencyKey() {
-    // Crypto-random UUID v4-like string
     const arr = new Uint8Array(16);
     crypto.getRandomValues(arr);
     return Array.from(arr, b => b.toString(16).padStart(2, '0')).join('');
@@ -730,6 +728,12 @@
 
   // ===== Socket Listeners — Debounced =====
   function setupSocketListeners() {
+    // FIXED: Guard against missing socket (if Socket.IO script failed to load)
+    if (typeof socket === 'undefined' || !socket) {
+      console.warn('[POS] Socket.IO not available — real-time updates disabled');
+      return;
+    }
+
     const debouncedRender = () => {
       if (isDestroyed) return;
       clearTimeout(socketDebounce);
@@ -746,7 +750,6 @@
       const idx = allProducts.findIndex(p => p._id === updatedProduct?._id);
       if (idx !== -1) {
         allProducts[idx] = { ...allProducts[idx], ...updatedProduct };
-        // Update cart stock references
         cart.forEach(item => {
           if (item.productId === updatedProduct._id) {
             item.stock = Number(updatedProduct.stock) || 0;
@@ -758,7 +761,6 @@
 
     socket.on('product:created', (product) => {
       if (isDestroyed) return;
-      // Only add if not already present
       if (!allProducts.find(p => p._id === product?._id)) {
         allProducts.push(product);
         debouncedRender();
@@ -777,7 +779,6 @@
     socket.on('product:deleted', ({ id }) => {
       if (isDestroyed) return;
       allProducts = allProducts.filter(p => p._id !== id);
-      // Remove from cart if present
       cart = cart.filter(i => i.productId !== id);
       renderCart();
       debouncedRender();
@@ -798,10 +799,12 @@
     clearTimeout(searchDebounce);
     clearTimeout(socketDebounce);
     if (checkoutAbort) checkoutAbort.abort();
-    socket.off('product:stockUpdated');
-    socket.off('product:created');
-    socket.off('product:updated');
-    socket.off('product:deleted');
-    socket.off('category:created');
+    if (typeof socket !== 'undefined' && socket) {
+      socket.off('product:stockUpdated');
+      socket.off('product:created');
+      socket.off('product:updated');
+      socket.off('product:deleted');
+      socket.off('category:created');
+    }
   });
 })();

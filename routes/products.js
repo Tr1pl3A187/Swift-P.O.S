@@ -24,6 +24,49 @@ function validateObjectId(id) {
   return mongoose.Types.ObjectId.isValid(id);
 }
 
+// ===== GET /api/products/alerts/low-stock — MUST be before /:id =====
+router.get('/alerts/low-stock', async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const skip = (page - 1) * limit;
+    const storeId = req.headers['x-store-id'] || 'default';
+
+    const filter = {
+      isActive: true,
+      storeId,
+      $expr: { $lte: ['$stock', '$lowStockThreshold'] }
+    };
+
+    const [products, total] = await Promise.all([
+      Product.find(filter)
+        .sort({ stock: 1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Product.countDocuments(filter)
+    ]);
+
+    await Product.populate(products, { path: 'category', select: 'name icon color' });
+
+    res.json({
+      success: true,
+      data: products,
+      meta: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+        hasNext: page * limit < total,
+        hasPrev: page > 1
+      }
+    });
+  } catch (err) {
+    console.error('GET /products/alerts/low-stock error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch low stock alerts' });
+  }
+});
+
 // ===== GET /api/products — Paginated, Indexed Search =====
 router.get('/', async (req, res) => {
   try {
@@ -34,8 +77,6 @@ router.get('/', async (req, res) => {
 
     const filter = { isActive: true };
 
-    // MULTI-TENANCY: Scope to store (or global products)
-    // If your Product schema lacks storeId, add it. Until then, this is a no-op.
     if (req.query.scope !== 'global') {
       filter.$or = [{ storeId }, { storeId: { $exists: false } }];
     }
@@ -51,11 +92,21 @@ router.get('/', async (req, res) => {
       const search = req.query.search.trim();
       if (search.length > 0) {
         const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        filter.$or = [
+        const searchConditions = [
           { name: { $regex: escaped, $options: 'i' } },
           { sku: { $regex: escaped, $options: 'i' } },
           { barcode: { $regex: escaped, $options: 'i' } }
         ];
+
+        if (filter.$or) {
+          filter.$and = [
+            { $or: filter.$or },
+            { $or: searchConditions }
+          ];
+          delete filter.$or;
+        } else {
+          filter.$or = searchConditions;
+        }
       }
     }
 
@@ -96,9 +147,6 @@ router.get('/:id', async (req, res) => {
 
     const storeId = req.headers['x-store-id'] || 'default';
     const filter = { _id: req.params.id, isActive: true };
-    
-    // If enforcing multi-tenancy on single-item fetch:
-    // filter.$or = [{ storeId }, { storeId: { $exists: false } }];
 
     const product = await Product.findOne(filter)
       .populate('category', 'name icon color')
@@ -132,12 +180,11 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Stock cannot be negative' });
     }
 
-    // App-level pre-check for friendly error (race-safe fallback is unique index)
     if (cleanBody.sku) {
-      const existing = await Product.findOne({ 
-        sku: cleanBody.sku, 
+      const existing = await Product.findOne({
+        sku: cleanBody.sku,
         isActive: true,
-        storeId 
+        storeId
       }).lean();
       if (existing) {
         return res.status(409).json({ success: false, message: 'SKU already exists for this store' });
@@ -170,7 +217,7 @@ router.put('/:id', async (req, res) => {
     const cleanBody = sanitizeBody(req.body, ALLOWED_PRODUCT_FIELDS);
     delete cleanBody._id;
     delete cleanBody.createdAt;
-    delete cleanBody.storeId; // Prevent moving products between stores
+    delete cleanBody.storeId;
 
     if (cleanBody.price !== undefined && cleanBody.price < 0) {
       return res.status(400).json({ success: false, message: 'Price cannot be negative' });
@@ -202,7 +249,6 @@ router.put('/:id', async (req, res) => {
 
 // ===== PATCH /api/products/:id/stock — Atomic, Transactional, Race-Safe =====
 router.patch('/:id/stock', async (req, res) => {
-  // --- VALIDATION OUTSIDE TRANSACTION (don't burn pool slots) ---
   if (!validateObjectId(req.params.id)) {
     return res.status(400).json({ success: false, message: 'Invalid product ID' });
   }
@@ -210,9 +256,9 @@ router.patch('/:id/stock', async (req, res) => {
   const { quantity, type, reason } = req.body;
 
   if (!ALLOWED_STOCK_TYPES.includes(type)) {
-    return res.status(400).json({ 
-      success: false, 
-      message: `Type must be one of: ${ALLOWED_STOCK_TYPES.join(', ')}` 
+    return res.status(400).json({
+      success: false,
+      message: `Type must be one of: ${ALLOWED_STOCK_TYPES.join(', ')}`
     });
   }
   if (typeof quantity !== 'number' || quantity < 0 || !Number.isFinite(quantity)) {
@@ -221,7 +267,6 @@ router.patch('/:id/stock', async (req, res) => {
 
   const storeId = req.headers['x-store-id'] || 'default';
 
-  // --- TRANSACTION BODY (retryable) ---
   async function executeStockUpdate(session) {
     session.startTransaction({
       readConcern: { level: 'snapshot' },
@@ -233,7 +278,6 @@ router.patch('/:id/stock', async (req, res) => {
       let updatedProduct;
 
       if (type === 'adjustment') {
-        // Read first for audit trail (adjustment has no delta math)
         const product = await Product.findOne(
           { _id: req.params.id, isActive: true, storeId },
           'stock',
@@ -253,7 +297,6 @@ router.patch('/:id/stock', async (req, res) => {
           { new: true, session, runValidators: true }
         ).populate('category', 'name icon color');
       } else {
-        // ATOMIC $inc — eliminates read-modify-write race condition
         const incAmount = type === 'in' ? quantity : -quantity;
         const filter = type === 'out'
           ? { _id: req.params.id, isActive: true, storeId, stock: { $gte: quantity } }
@@ -266,7 +309,6 @@ router.patch('/:id/stock', async (req, res) => {
         ).populate('category', 'name icon color');
 
         if (!updatedProduct) {
-          // Distinguish 404 (not found) vs 409 (insufficient stock)
           const exists = await Product.findOne(
             { _id: req.params.id, isActive: true, storeId },
             'stock',
@@ -280,12 +322,12 @@ router.patch('/:id/stock', async (req, res) => {
 
           if (type === 'out') {
             await session.abortTransaction();
-            return { 
-              status: 409, 
-              body: { 
-                success: false, 
-                message: `Insufficient stock. Available: ${exists.stock}, Requested: ${quantity}` 
-              } 
+            return {
+              status: 409,
+              body: {
+                success: false,
+                message: `Insufficient stock. Available: ${exists.stock}, Requested: ${quantity}`
+              }
             };
           }
 
@@ -293,12 +335,11 @@ router.patch('/:id/stock', async (req, res) => {
           return { status: 500, body: { success: false, message: 'Stock update failed unexpectedly' } };
         }
 
-        previousStock = type === 'in' 
-          ? updatedProduct.stock - quantity 
+        previousStock = type === 'in'
+          ? updatedProduct.stock - quantity
           : updatedProduct.stock + quantity;
       }
 
-      // Audit trail inside transaction
       const movement = new StockMovement({
         product: updatedProduct._id,
         type,
@@ -330,7 +371,6 @@ router.patch('/:id/stock', async (req, res) => {
     }
   }
 
-  // --- RETRY LOOP for TransientTransactionError (failover, network blips) ---
   const session = await mongoose.startSession();
   let result;
   let lastError;
@@ -344,7 +384,7 @@ router.patch('/:id/stock', async (req, res) => {
         lastError = err;
         const isTransient = err.errorLabels && err.errorLabels.includes('TransientTransactionError');
         const isCommitUnknown = err.errorLabels && err.errorLabels.includes('UnknownTransactionCommitResult');
-        
+
         if ((isTransient || isCommitUnknown) && attempt < 3) {
           console.warn(`Transient transaction error on attempt ${attempt}, retrying...`);
           await new Promise(r => setTimeout(r, 100 * attempt));
@@ -355,10 +395,10 @@ router.patch('/:id/stock', async (req, res) => {
     }
   } catch (err) {
     console.error('PATCH /products/:id/stock error:', err);
-    if (err.code === 112) { // WriteConflict
-      return res.status(409).json({ 
-        success: false, 
-        message: 'Concurrent stock modification detected. Please retry.' 
+    if (err.code === 112) {
+      return res.status(409).json({
+        success: false,
+        message: 'Concurrent stock modification detected. Please retry.'
       });
     }
     return res.status(500).json({ success: false, message: 'Stock adjustment failed' });
@@ -366,7 +406,6 @@ router.patch('/:id/stock', async (req, res) => {
     session.endSession();
   }
 
-  // Emit AFTER successful commit and session cleanup
   if (result && result.emit) {
     for (const evt of result.emit.events) {
       safeEmit(req.io, result.emit.room, evt.name, evt.payload);
@@ -401,50 +440,6 @@ router.delete('/:id', async (req, res) => {
   } catch (err) {
     console.error('DELETE /products/:id error:', err);
     res.status(500).json({ success: false, message: 'Failed to delete product' });
-  }
-});
-
-// ===== GET /api/products/alerts/low-stock — Index-Friendly Query =====
-router.get('/alerts/low-stock', async (req, res) => {
-  try {
-    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
-    const skip = (page - 1) * limit;
-    const storeId = req.headers['x-store-id'] || 'default';
-
-    // $expr query replaces heavy aggregation pipeline — uses index on { isActive: 1, stock: 1 }
-    const filter = { 
-      isActive: true, 
-      storeId,
-      $expr: { $lte: ['$stock', '$lowStockThreshold'] } 
-    };
-
-    const [products, total] = await Promise.all([
-      Product.find(filter)
-        .sort({ stock: 1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
-      Product.countDocuments(filter)
-    ]);
-
-    await Product.populate(products, { path: 'category', select: 'name icon color' });
-
-    res.json({
-      success: true,
-      data: products,
-      meta: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit),
-        hasNext: page * limit < total,
-        hasPrev: page > 1
-      }
-    });
-  } catch (err) {
-    console.error('GET /products/alerts/low-stock error:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch low stock alerts' });
   }
 });
 

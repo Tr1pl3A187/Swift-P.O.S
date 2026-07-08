@@ -1,12 +1,12 @@
 // ===== Global App State & Configuration =====
-const API = '/api';
+const API = 'http://localhost:3000/api';
 const STORE_ID = localStorage.getItem('storeId') || 'default';
 const API_TIMEOUT_MS = 15000;
 const HEALTH_CHECK_INTERVAL_MS = 10000;
-const HEALTH_CHECK_FAST_INTERVAL_MS = 3000; // When backend is down, check faster initially
-const HEALTH_CHECK_SLOW_INTERVAL_MS = 30000; // After prolonged outage, back off
+const HEALTH_CHECK_FAST_INTERVAL_MS = 3000;
+const HEALTH_CHECK_SLOW_INTERVAL_MS = 30000;
 const OFFLINE_QUEUE_KEY = 'swiftpos_offline_queue';
-const OFFLINE_QUEUE_MAX = 100; // Prevent unbounded localStorage growth
+const OFFLINE_QUEUE_MAX = 100;
 
 // ===== Polyfill: AbortSignal.timeout for legacy POS terminals =====
 if (typeof AbortSignal !== 'undefined' && !AbortSignal.timeout) {
@@ -43,14 +43,13 @@ const OfflineQueue = {
     return new Promise((resolve, reject) => {
       const tx = this.db.transaction(this.storeName, 'readwrite');
       const store = tx.objectStore(this.storeName);
-      // Deduplicate by idempotencyKey
       if (request.idempotencyKey) {
         const idxReq = store.openCursor();
         idxReq.onsuccess = (e) => {
           const cursor = e.target.result;
           if (cursor) {
             if (cursor.value.idempotencyKey === request.idempotencyKey) {
-              resolve(); // Already queued
+              resolve();
               return;
             }
             cursor.continue();
@@ -107,7 +106,7 @@ const OfflineQueue = {
 
 // ===== Circuit Breaker for Health Checks =====
 const CircuitBreaker = {
-  state: 'CLOSED', // CLOSED, OPEN, HALF_OPEN
+  state: 'CLOSED',
   failures: 0,
   threshold: 5,
   resetTimeout: 30000,
@@ -140,7 +139,7 @@ const CircuitBreaker = {
       }
       return false;
     }
-    return true; // HALF_OPEN allows one probe
+    return true;
   }
 };
 
@@ -154,7 +153,7 @@ const MAX_AUTH_FAILURES = 3;
 function createSocket() {
   const token = localStorage.getItem('authToken') || '';
 
-  socket = io({
+  socket = io('http://localhost:3000', {
     transports: ['websocket', 'polling'],
     reconnection: true,
     reconnectionAttempts: 10,
@@ -171,7 +170,6 @@ function createSocket() {
     authFailureCount = 0;
     updateConnStatus(true);
     console.log('[Socket] Connected:', socket.id);
-    // Trigger offline queue sync on reconnect
     syncOfflineQueue();
   });
 
@@ -185,7 +183,6 @@ function createSocket() {
     isSocketConnected = false;
     updateConnStatus(false);
 
-    // Auth failure — stop reconnecting to prevent DDoS
     if (err.message && (
       err.message.includes('Authentication required') ||
       err.message.includes('jwt') ||
@@ -196,8 +193,6 @@ function createSocket() {
       if (authFailureCount >= MAX_AUTH_FAILURES) {
         console.error('[Socket] Stopping reconnection — auth token invalid. Triggering re-auth...');
         socket.disconnect();
-        // Trigger your app's re-auth flow here
-        // window.location.href = '/login?reason=token_expired';
         toast('Session expired. Please log in again.', 'error');
       }
       return;
@@ -243,7 +238,7 @@ function updateConnStatus(connected) {
 // ===== Health Check — Circuit-Breaker Protected =====
 async function checkHealth() {
   if (!CircuitBreaker.canAttempt()) {
-    return; // Skip check while circuit is OPEN
+    return;
   }
 
   try {
@@ -264,7 +259,7 @@ async function checkHealth() {
       if (!wasHealthy) {
         updateConnStatus(isSocketConnected);
         toast('Connection restored.', 'success');
-        syncOfflineQueue(); // Attempt to sync pending sales
+        syncOfflineQueue();
       }
     } else {
       CircuitBreaker.recordFailure();
@@ -283,7 +278,6 @@ async function checkHealth() {
   }
 }
 
-// Safe abort signal creation (polyfill-compatible)
 function createAbortSignal(ms) {
   if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
     return AbortSignal.timeout(ms);
@@ -293,7 +287,6 @@ function createAbortSignal(ms) {
   return ctrl.signal;
 }
 
-// Adaptive health check interval
 let healthCheckTimer = null;
 function scheduleHealthCheck() {
   clearTimeout(healthCheckTimer);
@@ -313,7 +306,6 @@ scheduleHealthCheck();
 
 // ===== API Helper — Timeout, Retry, Offline Queue =====
 async function apiFetch(url, options = {}) {
-  // Fast-fail if browser knows we're offline
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
     const offlineErr = new Error('You are offline. This request has been queued for sync.');
     offlineErr.name = 'OfflineError';
@@ -400,16 +392,13 @@ async function apiFetchWithRetry(url, options = {}, maxRetries = 2) {
     } catch (err) {
       lastError = err;
 
-      // Don't retry client errors (4xx) except 408/429
       if (err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429) {
         throw err;
       }
 
-      // Don't retry if we're offline (will be queued instead)
       if (err.name === 'OfflineError') throw err;
 
       if (attempt <= maxRetries) {
-        // Exponential backoff: 1s, 2s, 4s...
         const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
         console.warn(`[apiFetch] Retry ${attempt}/${maxRetries} in ${delay}ms: ${url}`);
         await new Promise(r => setTimeout(r, delay));
@@ -424,7 +413,6 @@ async function apiFetchWithOfflineQueue(url, options = {}) {
   try {
     return await apiFetchWithRetry(url, options);
   } catch (err) {
-    // Queue mutating operations (POST, PUT, PATCH, DELETE) when offline
     const method = (options.method || 'GET').toUpperCase();
     const isMutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
 
@@ -488,13 +476,11 @@ async function syncOfflineQueue() {
         await OfflineQueue.remove(item.id);
         processed++;
       } catch (err) {
-        // If it's a 4xx (not 408/429), it's a permanent failure — remove it
         if (err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429) {
           console.error('[OfflineQueue] Permanent failure, removing:', err.message);
           await OfflineQueue.remove(item.id);
           failed++;
         } else {
-          // Temporary failure — leave in queue for next sync
           console.warn('[OfflineQueue] Temporary failure, will retry:', err.message);
           break;
         }
@@ -514,7 +500,6 @@ async function syncOfflineQueue() {
   }
 }
 
-// Generate UUIDv4-style idempotency key
 function generateIdempotencyKey() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
     const r = Math.random() * 16 | 0;

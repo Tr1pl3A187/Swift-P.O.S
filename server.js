@@ -1,5 +1,5 @@
 // server.js — Production-Grade, Globally-Distributed POS Backend
-// REVISION: v2.0 — MongoDB connectivity hardened for global multi-region deployment
+// REVISION: v2.3 — Fixed static file serving for CSS/JS
 
 const express = require('express');
 const http = require('http');
@@ -37,25 +37,44 @@ const server = http.createServer(app);
 app.set('trust proxy', 1);
 
 /* -------------------------
-   CORS — Lock it down
+   CORS — Bulletproof for Dev & Prod
    ------------------------- */
 const corsOrigins = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(',').map((s) => s.trim())
   : '*';
 
-app.use(
-  cors({
-    origin: corsOrigins,
-    credentials: true,
-  })
-);
+const corsOptions = {
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-store-id', 'idempotency-key']
+};
+
+if (process.env.NODE_ENV === 'production') {
+  corsOptions.origin = corsOrigins;
+  console.log('[CORS] Production mode — allowed origins:', corsOrigins);
+} else {
+  corsOptions.origin = function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+      return callback(null, true);
+    }
+    if (corsOrigins === '*' || corsOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    console.warn(`[CORS] Blocked origin: ${origin}`);
+    callback(new Error('Not allowed by CORS'));
+  };
+  console.log('[CORS] Development mode — allowing all localhost origins');
+}
+
+app.use(cors(corsOptions));
 
 /* -------------------------
    Socket.IO — Resilient & Scoped
    ------------------------- */
 const io = new Server(server, {
   cors: {
-    origin: corsOrigins,
+    origin: corsOptions.origin,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     credentials: true,
   },
@@ -88,7 +107,7 @@ app.use((req, res, next) => {
 });
 
 /* -------------------------
-   Health Check — ACTUALLY pings MongoDB wire protocol
+   Health Check
    ------------------------- */
 app.get('/api/health', async (req, res) => {
   let dbHealthy = false;
@@ -129,21 +148,45 @@ app.use('/api/sales', require('./routes/sales'));
 app.use('/api/stock', require('./routes/stock'));
 
 /* -------------------------
-   SPA Static Routes
+   API 404 Handler — JSON only
    ------------------------- */
+app.use('/api/*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Cannot ${req.method} ${req.originalUrl}`,
+  });
+});
+
+/* -------------------------
+   FIXED: Static Files — Serve CSS, JS, and pages from root
+   ------------------------- */
+// Serve css/ and js/ folders directly from project root
+app.use('/css', express.static(path.join(__dirname, 'css')));
+app.use('/js', express.static(path.join(__dirname, 'js')));
+
+// Serve public/ folder (for index.html and any other public assets)
 app.use(express.static(path.join(__dirname, 'public')));
+
+/* -------------------------
+   FIXED: Page Routes — Point to correct paths
+   ------------------------- */
 app.get('/', (req, res) =>
   res.sendFile(path.join(__dirname, 'public', 'index.html'))
 );
-app.get('/inventory', (req, res) =>
-  res.sendFile(path.join(__dirname, 'public', 'pages', 'inventory.html'))
-);
-app.get('/sales-history', (req, res) =>
-  res.sendFile(path.join(__dirname, 'public', 'pages', 'sales-history.html'))
-);
+
 app.get('/dashboard', (req, res) =>
-  res.sendFile(path.join(__dirname, 'public', 'pages', 'dashboard.html'))
+  res.sendFile(path.join(__dirname, 'pages', 'dashboard.html'))
 );
+
+app.get('/inventory', (req, res) =>
+  res.sendFile(path.join(__dirname, 'pages', 'inventory.html'))
+);
+
+app.get('/sales-history', (req, res) =>
+  res.sendFile(path.join(__dirname, 'pages', 'sales-history.html'))
+);
+
+// Catch-all: redirect unknown routes to home
 app.get('*', (req, res) =>
   res.sendFile(path.join(__dirname, 'public', 'index.html'))
 );
@@ -179,25 +222,18 @@ io.on('connection', (socket) => {
 const MONGODB_URI = process.env.MONGODB_URI;
 
 const mongooseOptions = {
-  // Pool sizing — read from env, fail fast if exhausted
   maxPoolSize: parseInt(process.env.MONGODB_MAX_POOL_SIZE, 10) || 50,
   minPoolSize: parseInt(process.env.MONGODB_MIN_POOL_SIZE, 10) || 5,
   maxIdleTimeMS: parseInt(process.env.MONGODB_MAX_IDLE_TIME_MS, 10) || 300000,
   waitQueueTimeoutMS: parseInt(process.env.MONGODB_WAIT_QUEUE_TIMEOUT, 10) || 10000,
-
-  // Timeouts tuned for cross-region Atlas
   serverSelectionTimeoutMS:
     parseInt(process.env.MONGODB_SERVER_SELECTION_TIMEOUT, 10) || 30000,
   connectTimeoutMS:
     parseInt(process.env.MONGODB_CONNECT_TIMEOUT, 10) || 10000,
   socketTimeoutMS:
     parseInt(process.env.MONGODB_SOCKET_TIMEOUT, 10) || 45000,
-
-  // Failover detection — 5s for global POS (can't wait 10s)
   heartbeatFrequencyMS:
     parseInt(process.env.MONGODB_HEARTBEAT_FREQUENCY, 10) || 5000,
-
-  // Durability & consistency
   retryWrites: true,
   retryReads: true,
   w: 'majority',
@@ -205,18 +241,11 @@ const mongooseOptions = {
   journal: true,
   readPreference: process.env.MONGODB_READ_PREFERENCE || 'primaryPreferred',
   maxStalenessSeconds: 90,
-
-  // Observability — identify app in Atlas logs
   appName: process.env.MONGODB_APP_NAME || 'swiftpos-api',
-
-  // CRITICAL: Never buffer commands if disconnected (prevents overselling)
   bufferCommands: false,
-
-  // Production safety — don't auto-build indexes on every startup
   autoIndex: process.env.NODE_ENV !== 'production',
 };
 
-// Connection lifecycle monitoring
 const db = mongoose.connection;
 
 db.on('connecting', () => console.log('⏳ MongoDB connecting...'));
@@ -239,7 +268,6 @@ db.on('reconnected', () => console.log('🔄 MongoDB reconnected'));
 db.on('error', (err) => console.error('💥 MongoDB connection error:', err));
 db.on('close', () => console.log('🔒 MongoDB connection closed'));
 
-// Driver-level pool monitoring (MongoDB driver 4.x+)
 db.once('open', () => {
   const client = mongoose.connection.getClient();
   client.on('connectionPoolCreated', (event) => {
@@ -262,7 +290,6 @@ db.once('open', () => {
 async function connectWithRetry(maxRetries = 5, baseDelayMs = 1000) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // CRITICAL: Clean up stale connection state before retry
       if (mongoose.connection.readyState !== 0) {
         console.log('🧹 Cleaning up stale connection before retry...');
         await mongoose.disconnect();
@@ -287,7 +314,7 @@ async function connectWithRetry(maxRetries = 5, baseDelayMs = 1000) {
 }
 
 /* -------------------------
-   Graceful Shutdown — Fixed Race Conditions
+   Graceful Shutdown
    ------------------------- */
 function setupGracefulShutdown() {
   let isShuttingDown = false;
@@ -298,14 +325,12 @@ function setupGracefulShutdown() {
 
     console.log(`\n${signal} received. Starting graceful shutdown...`);
 
-    // Safety net — if graceful shutdown hangs, we still die
     const forceExit = setTimeout(() => {
       console.error('💀 Graceful shutdown timed out. Forcing exit.');
       process.exit(1);
     }, 30000);
 
     try {
-      // 1. Stop accepting new HTTP connections, wait for active to finish
       await new Promise((resolve) => {
         server.close(() => {
           console.log('🛑 HTTP server closed');
@@ -313,7 +338,6 @@ function setupGracefulShutdown() {
         });
       });
 
-      // 2. Close Socket.IO cleanly
       await new Promise((resolve) => {
         io.close(() => {
           console.log('🛑 Socket.IO server closed');
@@ -321,7 +345,6 @@ function setupGracefulShutdown() {
         });
       });
 
-      // 3. Drain MongoDB connection pool
       await mongoose.disconnect();
       console.log('🛑 MongoDB disconnected');
 
@@ -338,13 +361,11 @@ function setupGracefulShutdown() {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
-  // CRITICAL: uncaughtException = corrupted V8 state. Crash immediately.
   process.on('uncaughtException', (err) => {
     console.error('UNCAUGHT EXCEPTION:', err);
     process.exit(1);
   });
 
-  // Unhandled rejections in production = bug. Crash and restart.
   process.on('unhandledRejection', (reason, promise) => {
     console.error('UNHANDLED REJECTION at:', promise, 'reason:', reason);
     if (process.env.NODE_ENV === 'production') {
@@ -354,7 +375,7 @@ function setupGracefulShutdown() {
 }
 
 /* -------------------------
-   Bootstrap — FAIL FAST always
+   Bootstrap
    ------------------------- */
 async function bootstrap() {
   try {
@@ -371,7 +392,6 @@ async function bootstrap() {
     });
   } catch (err) {
     console.error('💀 Bootstrap failed:', err);
-    // NEVER start serving POS requests without a database
     process.exit(1);
   }
 }

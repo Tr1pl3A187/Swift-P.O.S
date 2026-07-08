@@ -69,7 +69,7 @@
 
   // ===== Initialization =====
   document.addEventListener('DOMContentLoaded', () => {
-    if (!els.tbody) return; // Not on inventory page
+    if (!els.tbody) return;
     initInventory();
   });
 
@@ -151,7 +151,6 @@
       renderInvTable();
       updateInvStats();
 
-      // Load more if we have space and more pages
       if (page < totalPages && invProducts.length < PAGE_SIZE * 2) {
         await loadInvProducts(page + 1, true);
       }
@@ -205,7 +204,6 @@
 
     let products = [...invProducts];
 
-    // Client-side filtering (for already-loaded data)
     if (activeFilter.search) {
       const q = activeFilter.search.toLowerCase();
       products = products.filter(p => {
@@ -314,7 +312,6 @@
     els.tbody.innerHTML = '';
     els.tbody.appendChild(fragment);
 
-    // Event delegation for action buttons
     els.tbody.addEventListener('click', handleTableAction, { once: false });
   }
 
@@ -371,7 +368,6 @@
 
   // ===== Event Binding =====
   function bindInvEvents() {
-    // Search with debounce
     els.search?.addEventListener('input', (e) => {
       clearTimeout(searchDebounce);
       searchDebounce = setTimeout(() => {
@@ -389,7 +385,7 @@
 
     els.stockFilter?.addEventListener('change', (e) => {
       activeFilter.stock = e.target.value;
-      renderInvTable(); // Client-side only
+      renderInvTable();
     });
 
     els.resetBtn?.addEventListener('click', () => {
@@ -404,7 +400,6 @@
     els.addBtn?.addEventListener('click', openAddProduct);
     els.form?.addEventListener('submit', saveProduct);
 
-    // Stock type selector
     document.querySelectorAll('#stock-modal .payment-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         stockAdjType = btn.dataset.type;
@@ -460,7 +455,6 @@
   async function saveProduct(e) {
     e.preventDefault();
 
-    // Client-side validation
     const name = els.pName?.value.trim();
     const sku = els.pSku?.value.trim();
     const category = els.pCategory?.value;
@@ -533,7 +527,6 @@
   }
 
   function confirmDeleteProduct(id, name) {
-    // Custom modal instead of native confirm() for better UX and non-blocking
     const confirmed = window.confirm(`Delete "${escapeHtml(name)}"?\n\nThis action cannot be undone.`);
     if (!confirmed) return;
 
@@ -649,7 +642,6 @@
 
     els.catList.innerHTML = html;
 
-    // Event delegation for delete buttons
     els.catList.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-action="delete-cat"]');
       if (!btn) return;
@@ -720,7 +712,6 @@
   function escapeCsvField(field) {
     if (field == null) return '';
     const str = String(field);
-    // Escape quotes and wrap in quotes if contains comma, quote, or newline
     if (/[",\n\r]/.test(str)) {
       return `"${str.replace(/"/g, '""')}"`;
     }
